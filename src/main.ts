@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { unlinkSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 
 import { WeChatApi } from './wechat/api.js';
 import { saveAccount, loadLatestAccount, type AccountData } from './wechat/accounts.js';
@@ -266,7 +266,8 @@ async function handleMessage(
       session.state = 'idle';
       sessionStore.save(account.accountId, session);
       // Fall through to send new message to Claude
-    } else if (!userText.startsWith('/status') && !userText.startsWith('/help')) {
+    } else if (!userText.startsWith('/status') && !userText.startsWith('/help') &&
+               !userText.startsWith('/wechat-control')) {
       return;
     }
   }
@@ -458,12 +459,24 @@ async function sendToClaude(
       }
     }
 
+    // Inject context-sync file into system prompt if present
+    const contextSyncPath = join(DATA_DIR, 'context-sync.md');
+    let effectiveSystemPrompt = config.systemPrompt;
+    if (existsSync(contextSyncPath)) {
+      const contextSync = readFileSync(contextSyncPath, 'utf-8').trim();
+      if (contextSync) {
+        effectiveSystemPrompt = effectiveSystemPrompt
+          ? effectiveSystemPrompt + '\n\n【从 Claude Code 终端同步的会话上下文】\n' + contextSync
+          : '【从 Claude Code 终端同步的会话上下文】\n' + contextSync;
+      }
+    }
+
     const queryOptions: QueryOptions = {
       prompt: userText || '请分析这张图片',
       cwd: (session.workingDirectory || config.workingDirectory).replace(/^~/, process.env.HOME || ''),
       resume: session.sdkSessionId,
       model: session.model,
-      systemPrompt: config.systemPrompt,
+      systemPrompt: effectiveSystemPrompt,
       permissionMode: sdkPermissionMode,
       abortController,
       images,

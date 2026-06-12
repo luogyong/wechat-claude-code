@@ -1,7 +1,7 @@
 import type { Session } from '../session.js';
 import { findSkill } from '../claude/skill-scanner.js';
 import { logger } from '../logger.js';
-import { handleHelp, handleClear, handleCwd, handleModel, handlePermission, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleUnknown } from './handlers.js';
+import { handleHelp, handleClear, handleCwd, handleModel, handlePermission, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleUnknown, handleWeChatControlOn, handleWeChatControlOff, handleWeChatControlStatus } from './handlers.js';
 
 export interface CommandContext {
   accountId: string;
@@ -28,6 +28,9 @@ export interface CommandResult {
  *   /model <name> - Update the session model
  *   /status   - Show current session info
  *   /skills   - List all installed skills
+ *   /wechat-control-on  - Enable WeChat remote control
+ *   /wechat-control-off - Disable WeChat remote control
+ *   /wechat-control-status - Show remote control status
  *   /<skill>  - Invoke a skill by name (args are forwarded to Claude)
  */
 export function routeCommand(ctx: CommandContext): CommandResult {
@@ -42,7 +45,7 @@ export function routeCommand(ctx: CommandContext): CommandResult {
   const args = spaceIdx === -1 ? '' : text.slice(spaceIdx + 1).trim();
 
   logger.info(`Slash command: /${cmd} ${args}`.trimEnd());
-
+  logger.info(`DEBUG router cmd=[${cmd}] len=${cmd.length} hex=[${[...cmd].map(c => c.codePointAt(0)!.toString(16)).join(',')}]`);
   switch (cmd) {
     case 'help':
       return handleHelp(args);
@@ -71,6 +74,15 @@ export function routeCommand(ctx: CommandContext): CommandResult {
     case 'version':
     case 'v':
       return handleVersion();
+    case 'wechat-control-on':
+    case 'wetchat-control-on':   // common typo alias
+      return handleWeChatControlOn(ctx);
+    case 'wechat-control-off':
+    case 'wetchat-control-off':  // common typo alias
+      return handleWeChatControlOff(ctx);
+    case 'wechat-control-status':
+    case 'wetchat-control-status': // common typo alias
+      return handleWeChatControlStatus(ctx);
     default:
       return handleUnknown(cmd, args);
   }

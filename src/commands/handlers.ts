@@ -1,9 +1,11 @@
 import type { CommandContext, CommandResult } from './router.js';
 import { scanAllSkills, formatSkillList, findSkill, type SkillInfo } from '../claude/skill-scanner.js';
 import { loadConfig, saveConfig } from '../config.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
 
 const HELP_TEXT = `可用命令：
 
@@ -21,6 +23,11 @@ const HELP_TEXT = `可用命令：
   /model [名称]     查看或切换 Claude 模型
   /permission [模式] 查看或切换权限模式
   /prompt [内容]    查看或设置系统提示词（全局生效）
+
+远程控制：
+  /wechat-control-on     开启远程控制（从微信控制终端）
+  /wechat-control-off    关闭远程控制
+  /wechat-control-status 查看远程控制状态
 
 其他：
   /skills [full]    列出已安装的 skill（full 显示描述）
@@ -241,4 +248,200 @@ export function handleUnknown(cmd: string, args: string): CommandResult {
     handled: true,
     reply: `未找到 skill: ${cmd}\n输入 /skills 查看可用列表`,
   };
+}
+
+/** WeChat remote control - enable */
+export function handleWeChatControlOn(ctx: CommandContext): CommandResult {
+  const FLAG = join(homedir(), '.wechat-claude-code', 'wechat-control.flag');
+  const MIRROR = join(homedir(), '.wechat-claude-code', 'terminal-mirror.md');
+  const CONTEXT_SYNC = join(homedir(), '.wechat-claude-code', 'context-sync.md');
+
+  // Check if already enabled (e.g., by terminal /wechat-control-on)
+  if (existsSync(FLAG)) {
+    // Sync working directory from terminal's flag
+    try {
+      const existingFlag = JSON.parse(readFileSync(FLAG, 'utf-8'));
+      const terminalCwd = existingFlag.enabled_from_cwd;
+      if (terminalCwd && terminalCwd !== ctx.session.workingDirectory) {
+        ctx.updateSession({ workingDirectory: terminalCwd });
+        return {
+          reply: `✅ 远程控制已同步\n\n📱 工作目录已从终端同步:\n${terminalCwd}\n\n使用 /wechat-control-status 查看状态`,
+          handled: true,
+        };
+      }
+    } catch { /* ignore parse errors, fall through to generic message */ }
+
+    return {
+      reply: 'ℹ️ 远程控制已经开启\n\n使用 /wechat-control-status 查看状态',
+      handled: true,
+    };
+  }
+
+  // Resolve working directory: prefer terminal cwd from context-sync if available
+  let workingDir = ctx.session.workingDirectory;
+  if (existsSync(CONTEXT_SYNC)) {
+    try {
+      const ctxContent = readFileSync(CONTEXT_SYNC, 'utf-8');
+      const m = ctxContent.match(/^`([^`]+)`/m);
+      if (m?.[1]) { workingDir = m[1]; }
+    } catch { /* ignore */ }
+  }
+
+  // Create flag
+  const flagData = {
+    enabled_at: new Date().toISOString(),
+    enabled_from: 'wechat',
+    enabled_from_cwd: workingDir,
+  };
+  writeFileSync(FLAG, JSON.stringify(flagData, null, 2));
+
+  // Initialize mirror
+  writeFileSync(MIRROR, `# WeChat 远程控制镜像
+> 开启时间: ${new Date().toISOString()}
+> 触发方式: 微信端命令
+> 工作目录: ${workingDir}
+
+---
+
+`);
+
+  // Collect and write context
+  try {
+    const scriptPath = join(homedir(), '.claude', 'skills', 'wechat-claude-code', 'scripts', 'context-collector.mjs');
+    const contextOutput = execSync(`node "${scriptPath}" "${workingDir}"`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    writeFileSync(CONTEXT_SYNC, contextOutput);
+  } catch (err) {
+    // Fallback: simple context
+    const fallbackContext = `## 当前终端会话上下文
+
+> 采集时间: ${new Date().toISOString()}
+> 触发方式: 微信端
+
+### 工作目录
+\`${workingDir}\`
+
+### 会话信息
+- 模型: ${ctx.session.model || '默认'}
+- 权限模式: ${ctx.session.permissionMode || 'default'}
+- 会话状态: ${ctx.session.state}
+
+⚠️ 无法自动采集详细上下文，请手动补充项目信息。
+`;
+    writeFileSync(CONTEXT_SYNC, fallbackContext);
+  }
+
+  // Sync session working directory
+  if (workingDir !== ctx.session.workingDirectory) {
+    ctx.updateSession({ workingDirectory: workingDir });
+  }
+
+  const reply = `✅ WeChat 远程控制已开启
+
+📱 现在可以通过微信继续当前会话
+📝 对话镜像: terminal-mirror.md
+🔄 上下文已同步: context-sync.md
+
+当前工作目录: ${workingDir}
+
+💡 提示：
+- 微信端发送的所有消息都会被转发到终端 Claude Code
+- 使用 /wechat-control-off 关闭远程控制
+- 使用 /wechat-control-status 查看状态`;
+
+  return { reply, handled: true };
+}
+
+/** WeChat remote control - disable */
+export function handleWeChatControlOff(_ctx: CommandContext): CommandResult {
+  const FLAG = join(homedir(), '.wechat-claude-code', 'wechat-control.flag');
+  const MIRROR = join(homedir(), '.wechat-claude-code', 'terminal-mirror.md');
+
+  if (!existsSync(FLAG)) {
+    return {
+      reply: 'ℹ️ 远程控制未开启，无需关闭',
+      handled: true,
+    };
+  }
+
+  // Remove flag
+  try {
+    unlinkSync(FLAG);
+  } catch (err: any) {
+    return {
+      reply: `❌ 无法删除控制标志: ${err.message}`,
+      handled: true,
+    };
+  }
+
+  // Try to get summary
+  let summary = '(无对话记录)';
+  if (existsSync(MIRROR)) {
+    try {
+      const content = readFileSync(MIRROR, 'utf-8');
+      const lines = content.split('\n');
+      const last50 = lines.slice(-50).join('\n');
+      if (last50.trim()) {
+        summary = last50;
+      }
+    } catch {}
+  }
+
+  const reply = `✅ WeChat 远程控制已关闭
+
+📋 远程会话摘要（最后50行）:
+${'─'.repeat(40)}
+${summary}
+${'─'.repeat(40)}
+
+📄 完整记录: terminal-mirror.md
+
+💡 终端会话已恢复正常模式`;
+
+  return { reply, handled: true };
+}
+
+/** WeChat remote control - status */
+export function handleWeChatControlStatus(ctx: CommandContext): CommandResult {
+  const FLAG = join(homedir(), '.wechat-claude-code', 'wechat-control.flag');
+  const MIRROR = join(homedir(), '.wechat-claude-code', 'terminal-mirror.md');
+  const CONTEXT_SYNC = join(homedir(), '.wechat-claude-code', 'context-sync.md');
+
+  const active = existsSync(FLAG);
+
+  const lines = [
+    '━'.repeat(40),
+    'WeChat Remote Control Status',
+    '━'.repeat(40),
+    '',
+  ];
+
+  if (active) {
+    lines.push('🔛 远程控制: ✅ 开启');
+    try {
+      const flagData = JSON.parse(readFileSync(FLAG, 'utf-8'));
+      lines.push(`   开启时间: ${flagData.enabled_at}`);
+      lines.push(`   触发方式: ${flagData.enabled_from === 'wechat' ? '微信端' : '终端'}`);
+      lines.push(`   工作目录: ${flagData.enabled_from_cwd}`);
+    } catch {}
+  } else {
+    lines.push('🔴 远程控制: ❌ 关闭');
+  }
+
+  lines.push('');
+  lines.push('📁 文件状态:');
+  lines.push(`   Flag:    ${existsSync(FLAG) ? '✅' : '❌'}`);
+  lines.push(`   Mirror:  ${existsSync(MIRROR) ? '✅' : '❌'}`);
+  lines.push(`   Context: ${existsSync(CONTEXT_SYNC) ? '✅' : '❌'}`);
+  lines.push('');
+  lines.push('📊 当前会话:');
+  lines.push(`   工作目录: ${ctx.session.workingDirectory}`);
+  lines.push(`   模型: ${ctx.session.model || '默认'}`);
+  lines.push(`   状态: ${ctx.session.state}`);
+  lines.push('');
+  lines.push('━'.repeat(40));
+
+  return { reply: lines.join('\n'), handled: true };
 }
