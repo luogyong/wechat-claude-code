@@ -85,6 +85,16 @@ export function startTerminalBroker(
           continue;
         }
 
+        // Skip internal wechat-control commands (on/off/status scripts)
+        if (req.toolName === 'Bash') {
+          const input = typeof req.input === 'string' ? req.input : JSON.stringify(req.input);
+          if (input.includes('wechat-control.mjs') || input.includes('wechat-claude-code/scripts')) {
+            writeFileSync(respPath, JSON.stringify({ id: req.id, allowed: true, reason: 'internal_command' }));
+            try { unlinkSync(reqPath); } catch {}
+            continue;
+          }
+        }
+
         logger.info('Terminal permission request', { tool: req.toolName, id: req.id });
 
         // Forward to WeChat
