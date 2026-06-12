@@ -253,8 +253,12 @@ export function handleUnknown(cmd: string, args: string): CommandResult {
 /** WeChat remote control - enable */
 export function handleWeChatControlOn(ctx: CommandContext): CommandResult {
   const FLAG = join(homedir(), '.wechat-claude-code', 'wechat-control.flag');
+  const APPROVAL_FLAG = join(homedir(), '.wechat-claude-code', 'approval-mode');
   const MIRROR = join(homedir(), '.wechat-claude-code', 'terminal-mirror.md');
   const CONTEXT_SYNC = join(homedir(), '.wechat-claude-code', 'context-sync.md');
+
+  // Enable approval mode (terminal permission-broker.js checks this flag)
+  writeFileSync(APPROVAL_FLAG, new Date().toISOString());
 
   // Check if already enabled (e.g., by terminal /wechat-control-on)
   if (existsSync(FLAG)) {
@@ -357,6 +361,7 @@ export function handleWeChatControlOn(ctx: CommandContext): CommandResult {
 /** WeChat remote control - disable */
 export function handleWeChatControlOff(_ctx: CommandContext): CommandResult {
   const FLAG = join(homedir(), '.wechat-claude-code', 'wechat-control.flag');
+  const APPROVAL_FLAG = join(homedir(), '.wechat-claude-code', 'approval-mode');
   const MIRROR = join(homedir(), '.wechat-claude-code', 'terminal-mirror.md');
 
   if (!existsSync(FLAG)) {
@@ -366,9 +371,10 @@ export function handleWeChatControlOff(_ctx: CommandContext): CommandResult {
     };
   }
 
-  // Remove flag
+  // Remove flags
   try {
     unlinkSync(FLAG);
+    try { unlinkSync(APPROVAL_FLAG); } catch {}
   } catch (err: any) {
     return {
       reply: `❌ 无法删除控制标志: ${err.message}`,

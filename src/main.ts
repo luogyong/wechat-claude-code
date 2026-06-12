@@ -17,6 +17,7 @@ import { claudeQuery, type QueryOptions } from './claude/provider.js';
 import { loadConfig, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
+import { startTerminalBroker, handleTerminalPermissionResponse } from './terminal-broker.js';
 import { MessageType, type WeixinMessage } from './wechat/types.js';
 
 // ---------------------------------------------------------------------------
@@ -183,6 +184,14 @@ async function runDaemon(): Promise<void> {
 
   const sender = createSender(api, account.accountId);
   const sharedCtx = { lastContextToken: '' };
+
+  // Start terminal permission broker (bridges terminal Claude Code → WeChat)
+  const terminalBroker = startTerminalBroker(
+    sender,
+    account.userId ?? '',
+    () => sharedCtx.lastContextToken,
+  );
+
   const activeControllers = new Map<string, AbortController>();
   const permissionBroker = createPermissionBroker(async () => {
     try {
@@ -210,6 +219,7 @@ async function runDaemon(): Promise<void> {
 
   function shutdown(): void {
     logger.info('Shutting down...');
+    terminalBroker.stop();
     monitor.stop();
     process.exit(0);
   }
@@ -279,6 +289,15 @@ async function handleMessage(
     if (lower === 'y' || lower === 'yes' || lower === 'n' || lower === 'no') {
       permissionBroker.clearTimedOut(account.accountId);
       await sender.sendText(fromUserId, contextToken, '⏰ 权限请求已超时，请重新发送你的请求。');
+      return;
+    }
+  }
+
+  // -- Terminal permission broker: intercept y/n for terminal Claude Code permissions --
+  if (session.state === 'idle') {
+    const handled = handleTerminalPermissionResponse(userText);
+    if (handled) {
+      await sender.sendText(fromUserId, contextToken, '✅ 已响应终端权限请求');
       return;
     }
   }

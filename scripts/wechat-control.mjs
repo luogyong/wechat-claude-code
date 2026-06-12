@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
 const FLAG = join(homedir(), '.wechat-claude-code', 'wechat-control.flag');
+const APPROVAL_FLAG = join(homedir(), '.wechat-claude-code', 'approval-mode');
 const MIRROR = join(homedir(), '.wechat-claude-code', 'terminal-mirror.md');
 const CONTEXT_SYNC = join(homedir(), '.wechat-claude-code', 'context-sync.md');
 
@@ -82,6 +83,9 @@ if (cmd === 'on') {
     enabled_from_cwd: process.cwd(),
   }, null, 2));
 
+  // Enable approval mode (terminal permission-broker waits for WeChat responses)
+  writeFileSync(APPROVAL_FLAG, new Date().toISOString());
+
   // Initialize mirror with header
   writeFileSync(MIRROR, `# WeChat 远程控制镜像
 > 开启时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
@@ -107,9 +111,10 @@ if (cmd === 'on') {
     process.exit(0);
   }
 
-  // Remove flag
+  // Remove flags
   try {
     unlinkSync(FLAG);
+    try { unlinkSync(APPROVAL_FLAG); } catch {}
   } catch (err) {
     console.error(`❌ 无法删除 flag 文件: ${err.message}`);
     process.exit(1);
